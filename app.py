@@ -4,6 +4,7 @@ import re
 import base64
 import requests
 from flask import Flask, request, jsonify, Response, send_file
+from xhtml2pdf import pisa
 
 app = Flask(__name__)
 
@@ -198,7 +199,6 @@ def build_html(data: dict) -> str:
     html = re.sub(r'(>RJ<)', f">{state_prefix}<", html)
     html = re.sub(r'(ff1 fs2 fc0 sc0 ls0 ws0">), 311001(<)', lambda m: m.group(1) + addr_line1 + m.group(2), html)
 
-    # Fixed regex replacement for address line 2
     if addr_line2:
         pattern = r'(ff1 fs2 fc0 sc0 ls0 ws0">' + re.escape(addr_line1) + r'</div>\s*<div class="[^"]*ff1 fs2 fc0 sc0 ls0 ws0">)</div>'
         html = re.sub(pattern, lambda m: m.group(1) + addr_line2 + '</div>', html, count=1)
@@ -223,32 +223,13 @@ def build_html(data: dict) -> str:
 
 
 def convert_html_to_pdf_bytes(html_content: str) -> bytes:
-    """Headless Chromium API for serverless HTML to PDF conversion"""
-    try:
-        resp = requests.post(
-            "https://chrome.browserless.io/pdf",
-            headers={"Content-Type": "text/html"},
-            data=html_content.encode("utf-8"),
-            params={"token": "demo"},
-            timeout=25
-        )
-        if resp.status_code == 200 and resp.content.startswith(b"%PDF"):
-            return resp.content
-    except Exception:
-        pass
-
-    try:
-        resp = requests.post(
-            "https://html2pdf.app/api/v1/generate",
-            json={"html": html_content, "format": "A4", "printBackground": True},
-            timeout=25
-        )
-        if resp.status_code == 200 and resp.content.startswith(b"%PDF"):
-            return resp.content
-    except Exception:
-        pass
-
-    raise RuntimeError("PDF generation service unavailable")
+    """Pure Python direct in-memory HTML to PDF rendering (Zero external API dependencies)"""
+    pdf_buffer = io.BytesIO()
+    pisa_status = pisa.CreatePDF(src=html_content, dest=pdf_buffer)
+    if pisa_status.err:
+        raise RuntimeError(f"xhtml2pdf rendering error code: {pisa_status.err}")
+    pdf_buffer.seek(0)
+    return pdf_buffer.getvalue()
 
 
 # --- 1. DIRECT PDF DOWNLOAD ROUTE ---
@@ -263,10 +244,8 @@ def rc_pdf_download():
         html = build_html(data)
         pdf_bytes = convert_html_to_pdf_bytes(html)
 
-        pdf_io = io.BytesIO(pdf_bytes)
-        pdf_io.seek(0)
         return send_file(
-            pdf_io,
+            io.BytesIO(pdf_bytes),
             mimetype="application/pdf",
             as_attachment=True,
             download_name=f"RC_{vehicle}.pdf"
