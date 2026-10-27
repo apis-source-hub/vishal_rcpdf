@@ -227,7 +227,7 @@ def build_html(data: dict) -> str:
 
 
 def html_to_pdf_bytes(html_content: str) -> bytes:
-    """HTML स्ट्रिंग को सीधे PDF बाइट्स में बदलता है"""
+    """HTML string ko direct PDF bytes me convert karta hai"""
     base_dir = os.path.dirname(os.path.abspath(__file__))
     return HTML(string=html_content, base_url=base_dir).write_pdf()
 
@@ -256,21 +256,15 @@ def rc_pdf_download():
         return jsonify({"error": str(exc)}), 500
 
 
-# --- 2. JSON RESPONSE WITH BASE64 PDF ---
+# --- 2. JSON RESPONSE WITH MASTER DATA & BASE64 PDF ---
 @app.route("/rc")
 def rc_json():
-    start_time = time.time()
-    current_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
     vehicle = request.args.get("vehicle", "").strip().upper()
     if not vehicle:
         return jsonify({
-            "status": "error",
+            "code": 400,
             "message": "vehicle parameter required",
-            "timestamp": current_timestamp,
-            "rcno": vehicle,
-            "pdf": None,
-            "execution_time": f"{round(time.time() - start_time, 3)}s"
+            "data": None
         }), 400
 
     try:
@@ -279,23 +273,46 @@ def rc_json():
         pdf_bytes = html_to_pdf_bytes(html)
         pdf_base64 = base64.b64encode(pdf_bytes).decode("utf-8")
 
-        return jsonify({
-            "execution_time": f"{round(time.time() - start_time, 3)}s",
-            "message": "RC PDF fetched successfully",
-            "pdf": pdf_base64,
-            "rcno": vehicle,
-            "status": "success",
-            "timestamp": current_timestamp
-        }), 200
+        # Registration details extract logic
+        reg_no = data.get("regNo", vehicle)
+        rto_code = reg_no[2:4] if len(reg_no) >= 4 and reg_no[2:4].isdigit() else ""
+        state_code = reg_no[:2] if len(reg_no) >= 2 else ""
+        maker = data.get("manufacturer", "")
+        fuel = data.get("fuelType", "")
+        cc = data.get("cubicCapacity", "")
+        state_name = data.get("rtoData", {}).get("statename", "")
+        zone = data.get("regAuthority", "")
+
+        response_payload = {
+            "code": 200,
+            "data": {
+                "masterData": [
+                    {
+                        "masterDpValue": f"{maker} / {fuel} / {cc} CC".strip(" /"),
+                        "masterFuel": fuel,
+                        "masterMake": maker,
+                        "masterModel": data.get("vehicle", ""),
+                        "masterModelcode": "",
+                        "masterRTOCode": rto_code,
+                        "masterRtoLocationCode": "",
+                        "masterRtoShowVal": f"{reg_no[:4]}-{zone}" if zone else reg_no[:4],
+                        "masterState": state_name,
+                        "masterStateCode": "",
+                        "masterStatecode": state_code,
+                        "masterZonename": zone,
+                        "pdf_base64": pdf_base64
+                    }
+                ]
+            }
+        }
+
+        return jsonify(response_payload), 200
 
     except Exception as exc:
         return jsonify({
-            "execution_time": f"{round(time.time() - start_time, 3)}s",
+            "code": 500,
             "message": str(exc),
-            "pdf": None,
-            "rcno": vehicle,
-            "status": "error",
-            "timestamp": current_timestamp
+            "data": None
         }), 500
 
 
@@ -319,9 +336,9 @@ def index():
     return (
         "<h2>RC Card Generator</h2>"
         "<ul>"
-        "<li><code>/rcdownload?vehicle=GJ24AK4695</code> — Direct PDF Download</li>"
-        "<li><code>/rc?vehicle=GJ24AK4695</code> — JSON with Base64 PDF</li>"
-        "<li><code>/rchtml?vehicle=GJ24AK4695</code> — Raw HTML</li>"
+        "<li><code>/rcdownload?vehicle=GJ05PB4974</code> — Direct PDF Download</li>"
+        "<li><code>/rc?vehicle=GJ05PB4974</code> — JSON with Base64 PDF & MasterData</li>"
+        "<li><code>/rchtml?vehicle=GJ05PB4974</code> — Raw HTML</li>"
         "</ul>"
     )
 
