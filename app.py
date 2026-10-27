@@ -221,43 +221,57 @@ def build_html(data: dict) -> str:
     return html
 
 
-def convert_html_to_original_pdf(html_content: str) -> bytes:
-    """Exact template.html layout ko PDF me convert karne ke liye optimized pipeline"""
-    # Attempt 1: Chrome headless print
-    try:
-        r = requests.post(
-            "https://api.html2pdf.app/v1/generate",
-            json={"html": html_content, "format": "A4", "landscape": True, "printBackground": True},
-            timeout=18
-        )
-        if r.status_code == 200 and r.content.startswith(b"%PDF"):
-            return r.content
-    except Exception:
-        pass
-
-    # Attempt 2: Direct Headless PDF Converter
-    try:
-        r = requests.post(
-            "https://pdfcrowd.com/api/v2/convert/html/",
-            data={"text": html_content, "orientation": "landscape"},
-            timeout=18
-        )
-        if r.status_code == 200 and r.content.startswith(b"%PDF"):
-            return r.content
-    except Exception:
-        pass
-
-    # Fallback to local SVG/PDF wrapper matching original dimensions
-    from reportlab.lib.pagesizes import landscape, A4
-    from reportlab.pdfgen import canvas
+def render_template_to_pdf_bytes(html_content: str) -> bytes:
+    """Original template.html CSS design ko maintain karke PDF banata hai"""
     
-    buf = io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=landscape(A4))
-    c.drawString(100, 500, "RC Card Rendered")
-    c.showPage()
-    c.save()
-    buf.seek(0)
-    return buf.getvalue()
+    # 1. Primary Render Service (High fidelity chrome landscape)
+    try:
+        render_res = requests.post(
+            "https://api.html2pdf.rocketapi.net/v1/html-to-pdf",
+            headers={"Content-Type": "application/json"},
+            json={
+                "html": html_content,
+                "landscape": True,
+                "format": "A4",
+                "printBackground": True,
+                "scale": 1.0
+            },
+            timeout=25
+        )
+        if render_res.status_code == 200 and render_res.content.startswith(b"%PDF"):
+            return render_res.content
+    except Exception:
+        pass
+
+    # 2. Backup Direct Microservice
+    try:
+        render_res = requests.post(
+            "https://render-pdf.azurewebsites.net/api/render",
+            data=html_content.encode("utf-8"),
+            headers={"Content-Type": "text/html; charset=utf-8"},
+            timeout=25
+        )
+        if render_res.status_code == 200 and render_res.content.startswith(b"%PDF"):
+            return render_res.content
+    except Exception:
+        pass
+
+    # 3. Third Fallback Service
+    render_res = requests.post(
+        "https://chrome.browserless.io/pdf?token=demo",
+        headers={"Content-Type": "text/html"},
+        data=html_content.encode("utf-8"),
+        params={
+            "landscape": "true",
+            "printBackground": "true",
+            "format": "A4"
+        },
+        timeout=30
+    )
+    if render_res.status_code == 200 and render_res.content.startswith(b"%PDF"):
+        return render_res.content
+
+    raise RuntimeError("Original template PDF render failed. Renderer unreachable.")
 
 
 # --- 1. DIRECT PDF DOWNLOAD ROUTE ---
@@ -270,7 +284,7 @@ def rc_pdf_download():
     try:
         data = fetch_rc_data(vehicle)
         html = build_html(data)
-        pdf_bytes = convert_html_to_original_pdf(html)
+        pdf_bytes = render_template_to_pdf_bytes(html)
 
         return send_file(
             io.BytesIO(pdf_bytes),
@@ -296,7 +310,7 @@ def rc_json():
     try:
         data = fetch_rc_data(vehicle)
         html = build_html(data)
-        pdf_bytes = convert_html_to_original_pdf(html)
+        pdf_bytes = render_template_to_pdf_bytes(html)
         pdf_base64 = base64.b64encode(pdf_bytes).decode("utf-8")
 
         reg_no = data.get("regNo", vehicle)
