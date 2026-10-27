@@ -6,9 +6,10 @@ import time
 from datetime import datetime
 import requests
 from flask import Flask, request, jsonify, Response, send_file
-from PIL import Image, ImageDraw, ImageFont
+from weasyprint import HTML
 
 app = Flask(__name__)
+
 TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "template.html")
 session = requests.Session()
 
@@ -32,13 +33,13 @@ def normalize_api_data(raw_data: dict) -> dict:
     )
 
     fuel = d.get("fuelType") or d.get("Fuel_Type") or d.get("Fuel_Name") or "PETROL"
-    v_class = d.get("vehicleClass") or d.get("Vehicle_Class_Core") or d.get("Vehicle_Class") or "M-Cycle/Scooter(2WN)"
+    v_class = d.get("vehicleClass") or d.get("Vehicle_Class_Core") or d.get("Vehicle_Class") or "TWO WHEELER(NT)"
     maker = d.get("manufacturer") or d.get("Make_Name") or d.get("Vahan_Make") or ""
     model = d.get("vehicle") or d.get("Model_Name") or d.get("Vahan_Model") or ""
     color = d.get("color") or d.get("Color") or "WHITE"
     seat = str(d.get("seatCapacity") or d.get("Seating_Capacity") or d.get("Vahan_Seating_Capacity") or "2")
     unladen = str(d.get("unladenWeight") or d.get("Vahan_GVW") or "110")
-    cc = str(d.get("cubicCapacity") or d.get("Cubic_Capacity") or d.get("Vahan_Cubic_Capacity") or "124")
+    cc = str(d.get("cubicCapacity") or d.get("Cubic_Capacity") or d.get("Vahan_Cubic_Capacity") or "110.00")
 
     m_month = str(d.get("Manufacture_Month") or "")
     m_year = str(d.get("Manufacture_Year") or d.get("Year") or "")
@@ -74,17 +75,18 @@ def normalize_api_data(raw_data: dict) -> dict:
         "unladenWeight": unladen.strip(),
         "cubicCapacity": cc.strip(),
         "manufacturerMonthYear": mfg_my.strip(),
-        "rtoData": {"statename": state_name.strip() if state_name else "GUJARAT"},
+        "rtoData": {"statename": state_name.strip() if state_name else "India"},
         "regAuthority": str(rto_name).strip()
     }
 
 
 def fetch_rc_data(vehicle_no: str) -> dict:
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         "Accept": "application/json, text/plain, */*"
     }
 
+    # Attempt 1: Worker API
     api_2_url = "https://vehiclev2.vk177384.workers.dev/"
     try:
         resp2 = session.get(api_2_url, params={"number": vehicle_no, "api_key": "sneha"}, headers=headers, timeout=12)
@@ -97,6 +99,7 @@ def fetch_rc_data(vehicle_no: str) -> dict:
     except Exception:
         pass
 
+    # Attempt 2: Backup API
     api_1_url = "https://vahanapi.vk177384.workers.dev/"
     try:
         resp1 = session.get(api_1_url, params={"vehicle_no": vehicle_no}, headers=headers, timeout=12)
@@ -136,151 +139,98 @@ def card_issue_date(regn_dt: str) -> str:
     return regn_dt
 
 
-def draw_qr_matrix(draw, x, y, size):
-    """Draws exact realistic pattern for RC card QR code"""
-    draw.rectangle([x, y, x + size, y + size], fill="white", outline="black", width=1)
-    step = 4
-    for i in range(x + 4, x + size - 4, step * 2):
-        for j in range(y + 4, y + size - 4, step * 2):
-            draw.rectangle([i, j, i + step, j + step], fill="black")
-    # Corner squares
-    draw.rectangle([x + 3, y + 3, x + 26, y + 26], outline="black", width=3)
-    draw.rectangle([x + 9, y + 9, x + 20, y + 20], fill="black")
-    draw.rectangle([x + size - 26, y + 3, x + size - 3, y + 26], outline="black", width=3)
-    draw.rectangle([x + size - 20, y + 9, x + size - 9, y + 20], fill="black")
-    draw.rectangle([x + 3, y + size - 26, x + 26, y + size - 3], outline="black", width=3)
-    draw.rectangle([x + 9, y + size - 20, x + 20, y + size - 9], fill="black")
+def split_address(address_str: str, max_chars: int = 35) -> tuple:
+    if len(address_str) <= max_chars:
+        return address_str, ""
+    break_idx = address_str.rfind(" ", 0, max_chars)
+    if break_idx == -1:
+        break_idx = max_chars
+    line1 = address_str[:break_idx].strip()
+    line2 = address_str[break_idx:].strip()
+    if len(line2) > 45:
+        line2 = line2[:42] + "..."
+    return line1, line2
 
 
-def generate_exact_card_pdf(data: dict) -> bytes:
-    """Original RC card template jaisa exact layout PDF render karta hai"""
-    width = 1750
-    height = 680
-    img = Image.new("RGB", (width, height), "white")
-    draw = ImageDraw.Draw(img)
+def build_html(data: dict) -> str:
+    with open(TEMPLATE, "r", encoding="utf-8") as f:
+        html = f.read()
 
-    card_bg = "#CEE6F3"
-    border_col = "#4C7C97"
-    text_dark = "#111111"
+    rto_data = data.get("rtoData", {})
+    regn_no = data.get("regNo", "").strip()
+    raw_reg_date = data.get("regDate", "").strip()
+    regn_dt = format_date_to_card(raw_reg_date)
+    raw_expiry = data.get("insuranceUpto", "").strip()
+    validity = format_date_to_card(raw_expiry)
+    chassis = data.get("chassis", "").replace("~", " ").strip()
+    engine_no = data.get("engine", "").strip()
+    owner_name = data.get("owner", "").strip()
+    father_name = data.get("ownerFatherName", "").strip()
+    if father_name.upper() == "NA":
+        father_name = ""
 
-    try:
-        f_title = ImageFont.truetype("arialbd.ttf", 22)
-        f_bold = ImageFont.truetype("arialbd.ttf", 18)
-        f_reg = ImageFont.truetype("arial.ttf", 17)
-        f_small_bold = ImageFont.truetype("arialbd.ttf", 14)
-        f_small = ImageFont.truetype("arial.ttf", 14)
-    except Exception:
-        f_title = f_bold = f_reg = f_small_bold = f_small = ImageFont.load_default()
+    present_addr = data.get("presentAddress", "").strip()
+    perm_addr = data.get("permAddress", "").strip()
+    full_address = present_addr if len(present_addr) >= len(perm_addr) else perm_addr
+    addr_line1, addr_line2 = split_address(full_address, max_chars=35)
 
-    # --- FRONT CARD ---
-    c1_x1, c1_y1, c1_x2, c1_y2 = 40, 30, 840, 630
-    draw.rounded_rectangle([c1_x1, c1_y1, c1_x2, c1_y2], radius=20, fill=card_bg, outline=border_col, width=3)
+    fuel = data.get("fuelType", "").strip().upper()
+    norms = "BHARAT STAGE IV"
+    veh_cat = data.get("vehicleClass", "").strip()
+    maker = data.get("manufacturer", "").strip()
+    model = data.get("vehicle", "").strip()
+    color = data.get("color", "WHITE").strip()
+    body_type = "SALOON"
+    seat_cap = str(data.get("seatCapacity", "2")).strip()
+    unld_wt = str(data.get("unladenWeight", "110")).strip()
+    cubic_cap = str(data.get("cubicCapacity", "")).strip()
+    no_cyl = "1"
+    mfg_my = data.get("manufacturerMonthYear", "").strip()
+    reg_authority = data.get("regAuthority", "").strip()
+    issue_date = card_issue_date(raw_reg_date)
+    state_name = rto_data.get("statename", "India").strip() if rto_data else "India"
+    state_prefix = regn_no[:2] if len(regn_no) >= 2 else "RJ"
 
-    state_txt = data.get("rtoData", {}).get("statename", "GUJARAT").upper()
-    draw.text((c1_x1 + 130, c1_y1 + 25), "Indian Union Vehicle Registration Certificate", fill=text_dark, font=f_title)
-    draw.text((c1_x1 + 130, c1_y1 + 55), f"Issued by Government of {state_txt}", fill=text_dark, font=f_bold)
+    html = html.replace(">Government of Rajasthan<", f">Government of {state_name}<")
+    html = html.replace(">RJ06SQ4302<", f">{regn_no}<")
+    html = html.replace(">27-Apr-2011<", f">{regn_dt}<")
+    html = html.replace(">26-Apr-2026<", f">{validity}<")
+    html = html.replace(">MD626AG45B1C19003<", f">{chassis}<")
+    html = html.replace(">064CB1121025<", f">{engine_no}<")
+    html = html.replace(">SH HAMID KHAN<", f">{owner_name}<")
+    html = html.replace(">UMAID KHA KAYAMKHANI<", f">{father_name}<")
 
-    # Badges
-    draw.ellipse([c1_x2 - 110, c1_y1 + 35, c1_x2 - 62, c1_y1 + 83], fill="#5CD0F0")
-    draw.text((c1_x2 - 96, c1_y1 + 48), "NT", fill="black", font=f_bold)
-    draw.ellipse([c1_x2 - 55, c1_y1 + 35, c1_x2 - 7, c1_y1 + 83], fill="#E67E22")
-    state_short = data.get("regNo", "GJ")[:2]
-    draw.text((c1_x2 - 43, c1_y1 + 48), state_short, fill="black", font=f_bold)
+    html = re.sub(r'(>RJ<)', f">{state_prefix}<", html)
+    html = re.sub(r'(ff1 fs2 fc0 sc0 ls0 ws0">), 311001(<)', lambda m: m.group(1) + addr_line1 + m.group(2), html)
 
-    reg_no = data.get("regNo", "")
-    reg_dt = format_date_to_card(data.get("regDate", ""))
-    val_dt = format_date_to_card(data.get("insuranceUpto", ""))
+    # Address line 2 regex fix: lambda used to avoid invalid group reference error
+    if addr_line2:
+        pattern = r'(ff1 fs2 fc0 sc0 ls0 ws0">' + re.escape(addr_line1) + r'</div>\s*<div class="[^"]*ff1 fs2 fc0 sc0 ls0 ws0">)</div>'
+        html = re.sub(pattern, lambda m: m.group(1) + addr_line2 + "</div>", html, count=1)
 
-    draw.text((c1_x1 + 130, c1_y1 + 105), "Regn. No", fill=text_dark, font=f_bold)
-    draw.text((c1_x1 + 130, c1_y1 + 132), reg_no, fill=text_dark, font=f_reg)
+    html = html.replace(">PETROL<", f">{fuel}<")
+    html = html.replace(">BHARAT STAGE II<", f">{norms}<")
+    html = html.replace(">VEHICLE CLASS : TWO WHEELER(NT)<", f">VEHICLE CLASS : {veh_cat}<")
+    html = html.replace(">TVS MOTOR COMPANY LTD<", f">{maker}<")
+    html = html.replace(">TVS WEGO<", f">{model}<")
+    html = html.replace(">BROWN<", f">{color}<")
+    html = html.replace(">SOLO<", f">{body_type}<")
+    html = html.replace(">110.00<", f">{cubic_cap}<")
+    html = html.replace(">No of Cylinders : 1<", f">No of Cylinders : {no_cyl}<")
+    html = html.replace(">4/2011<", f">{mfg_my}<")
+    html = html.replace(">BHILWARA DTO, Rajasthan<", f">{reg_authority}<")
+    html = html.replace(">Card Issue Date (04-2011)<", f">Card Issue Date ({issue_date})<")
 
-    draw.text((c1_x1 + 320, c1_y1 + 105), "Date of Regn.", fill=text_dark, font=f_bold)
-    draw.text((c1_x1 + 320, c1_y1 + 132), reg_dt, fill=text_dark, font=f_reg)
+    html = re.sub(r'(Seating in all Capacity</div>.*?ff1.*?>)2(<)', lambda m: m.group(1) + seat_cap + m.group(2), html, flags=re.DOTALL)
+    html = re.sub(r'(Unladen Weight Kg</div>.*?ff1.*?>)110(<)', lambda m: m.group(1) + unld_wt + m.group(2), html, flags=re.DOTALL)
 
-    draw.text((c1_x1 + 520, c1_y1 + 105), "Regn. Validity", fill=text_dark, font=f_bold)
-    draw.text((c1_x1 + 520, c1_y1 + 132), val_dt, fill=text_dark, font=f_reg)
+    return html
 
-    draw.text((c1_x2 - 130, c1_y1 + 105), "Owner", fill=text_dark, font=f_bold)
-    draw.text((c1_x2 - 130, c1_y1 + 130), "Serial", fill=text_dark, font=f_bold)
-    draw.ellipse([c1_x2 - 65, c1_y1 + 120, c1_x2 - 30, c1_y1 + 155], outline="black", width=2)
-    draw.text((c1_x2 - 53, c1_y1 + 126), "1", fill="black", font=f_bold)
 
-    draw.text((c1_x1 + 130, c1_y1 + 175), "Chassis Number", fill=text_dark, font=f_bold)
-    draw.text((c1_x1 + 130, c1_y1 + 202), data.get("chassis", ""), fill=text_dark, font=f_reg)
-
-    draw.text((c1_x1 + 130, c1_y1 + 245), "Engine / Motor Number", fill=text_dark, font=f_bold)
-    draw.text((c1_x1 + 130, c1_y1 + 272), data.get("engine", ""), fill=text_dark, font=f_reg)
-
-    draw.text((c1_x1 + 130, c1_y1 + 315), "Owner Name", fill=text_dark, font=f_bold)
-    draw.text((c1_x1 + 130, c1_y1 + 342), data.get("owner", ""), fill=text_dark, font=f_reg)
-
-    draw.text((c1_x1 + 130, c1_y1 + 385), "Son / Daughter / Wife of (In case of Individual Owner)", fill=text_dark, font=f_bold)
-    draw.text((c1_x1 + 130, c1_y1 + 412), data.get("ownerFatherName", ""), fill=text_dark, font=f_reg)
-
-    draw.text((c1_x1 + 130, c1_y1 + 455), "Address", fill=text_dark, font=f_bold)
-    full_addr = (data.get("presentAddress") or data.get("permAddress") or "").strip()
-    draw.text((c1_x1 + 130, c1_y1 + 482), full_addr[:60], fill=text_dark, font=f_reg)
-    if len(full_addr) > 60:
-        draw.text((c1_x1 + 130, c1_y1 + 508), full_addr[60:120], fill=text_dark, font=f_reg)
-
-    draw.text((c1_x1 + 20, c1_y1 + 360), "Fuel", fill=text_dark, font=f_small_bold)
-    draw.text((c1_x1 + 20, c1_y1 + 385), data.get("fuelType", "PETROL"), fill=text_dark, font=f_small)
-
-    draw.text((c1_x1 + 20, c1_y1 + 450), "Emission Norms", fill=text_dark, font=f_small_bold)
-    draw.text((c1_x1 + 20, c1_y1 + 475), "BHARAT STAGE IV", fill=text_dark, font=f_small)
-
-    # --- BACK CARD ---
-    c2_x1, c2_y1, c2_x2, c2_y2 = 890, 30, 1690, 630
-    draw.rounded_rectangle([c2_x1, c2_y1, c2_x2, c2_y2], radius=20, fill=card_bg, outline=border_col, width=3)
-
-    draw.ellipse([c2_x1 + 20, c2_y1 + 35, c2_x1 + 68, c2_y1 + 83], fill="#5CD0F0")
-    draw.text((c2_x1 + 34, c2_y1 + 48), "NT", fill="black", font=f_bold)
-    draw.ellipse([c2_x1 + 75, c2_y1 + 35, c2_x1 + 123, c2_y1 + 83], fill="#E67E22")
-    draw.text((c2_x1 + 87, c2_y1 + 48), state_short, fill="black", font=f_bold)
-
-    v_class = data.get("vehicleClass", "M-Cycle/Scooter(2WN)")
-    draw.text((c2_x1 + 145, c2_y1 + 50), f"VEHICLE CLASS : {v_class}", fill=text_dark, font=f_title)
-
-    draw.text((c2_x1 + 25, c2_y1 + 105), "Regn. Number", fill=text_dark, font=f_bold)
-    draw.text((c2_x1 + 25, c2_y1 + 132), reg_no, fill=text_dark, font=f_reg)
-
-    draw_qr_matrix(draw, c2_x1 + 25, c2_y1 + 165, 140)
-
-    specs_x = c2_x1 + 210
-    draw.text((specs_x, c2_y1 + 105), "Maker:", fill=text_dark, font=f_bold)
-    draw.text((specs_x + 100, c2_y1 + 105), data.get("manufacturer", ""), fill=text_dark, font=f_reg)
-
-    draw.text((specs_x, c2_y1 + 165), "Model:", fill=text_dark, font=f_bold)
-    draw.text((specs_x + 100, c2_y1 + 165), data.get("vehicle", ""), fill=text_dark, font=f_reg)
-
-    draw.text((specs_x, c2_y1 + 225), "Color:", fill=text_dark, font=f_bold)
-    draw.text((specs_x + 100, c2_y1 + 225), data.get("color", "WHITE"), fill=text_dark, font=f_reg)
-    draw.text((specs_x + 320, c2_y1 + 225), "/ Body Type:  SALOON", fill=text_dark, font=f_bold)
-
-    draw.text((specs_x, c2_y1 + 285), "Seating (in all) Capacity", fill=text_dark, font=f_bold)
-    draw.text((specs_x, c2_y1 + 312), data.get("seatCapacity", "2"), fill=text_dark, font=f_reg)
-
-    draw.text((specs_x, c2_y1 + 365), "Unladen Weight (Kg)", fill=text_dark, font=f_bold)
-    draw.text((specs_x, c2_y1 + 392), data.get("unladenWeight", "110"), fill=text_dark, font=f_reg)
-
-    draw.text((c2_x1 + 25, c2_y1 + 455), "Month - Year of Mfg.", fill=text_dark, font=f_small_bold)
-    draw.text((c2_x1 + 25, c2_y1 + 480), data.get("manufacturerMonthYear", "3/2017"), fill=text_dark, font=f_small)
-
-    draw.text((c2_x1 + 220, c2_y1 + 455), "Cubic Cap.", fill=text_dark, font=f_small_bold)
-    draw.text((c2_x1 + 220, c2_y1 + 480), f"{data.get('cubicCapacity', '124')}", fill=text_dark, font=f_small)
-
-    draw.text((c2_x1 + 370, c2_y1 + 455), "No of Cylinders : 1", fill=text_dark, font=f_small_bold)
-    draw.text((c2_x1 + 520, c2_y1 + 455), "Financier", fill=text_dark, font=f_small_bold)
-
-    draw.text((c2_x1 + 480, c2_y1 + 515), "Registration Authority", fill=text_dark, font=f_small_bold)
-    draw.text((c2_x1 + 480, c2_y1 + 540), data.get("regAuthority", ""), fill=text_dark, font=f_small)
-
-    draw.text((c2_x2 - 35, c2_y1 + 280), "Form : 23A", fill=text_dark, font=f_small_bold)
-
-    pdf_out = io.BytesIO()
-    img.save(pdf_out, format="PDF", resolution=150.0)
-    pdf_out.seek(0)
-    return pdf_out.getvalue()
+def html_to_pdf_bytes(html_content: str) -> bytes:
+    """HTML ko bina kisi design change ke WeasyPrint se original PDF me convert karta hai"""
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    return HTML(string=html_content, base_url=base_dir).write_pdf()
 
 
 # --- 1. DIRECT PDF DOWNLOAD ROUTE ---
@@ -292,10 +242,13 @@ def rc_pdf_download():
 
     try:
         data = fetch_rc_data(vehicle)
-        pdf_bytes = generate_exact_card_pdf(data)
+        html = build_html(data)
+        pdf_bytes = html_to_pdf_bytes(html)
 
+        pdf_io = io.BytesIO(pdf_bytes)
+        pdf_io.seek(0)
         return send_file(
-            io.BytesIO(pdf_bytes),
+            pdf_io,
             mimetype="application/pdf",
             as_attachment=True,
             download_name=f"RC_{vehicle}.pdf"
@@ -304,7 +257,7 @@ def rc_pdf_download():
         return jsonify({"error": str(exc)}), 500
 
 
-# --- 2. EXACT JSON RESPONSE AS REQUESTED ---
+# --- 2. EXACT JSON RESPONSE AS IN SCREENSHOT ---
 @app.route("/rc")
 def rc_json():
     start_time = time.time()
@@ -323,7 +276,8 @@ def rc_json():
 
     try:
         data = fetch_rc_data(vehicle)
-        pdf_bytes = generate_exact_card_pdf(data)
+        html = build_html(data)
+        pdf_bytes = html_to_pdf_bytes(html)
         pdf_base64 = base64.b64encode(pdf_bytes).decode("utf-8")
 
         return jsonify({
@@ -346,6 +300,21 @@ def rc_json():
         }), 500
 
 
+# --- 3. RAW HTML VIEW ---
+@app.route("/rchtml")
+def rc_html():
+    vehicle = request.args.get("vehicle", "").strip().upper()
+    if not vehicle:
+        return jsonify({"error": "vehicle parameter required"}), 400
+
+    try:
+        data = fetch_rc_data(vehicle)
+        html = build_html(data)
+        return Response(html, mimetype="text/html")
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
 @app.route("/")
 def index():
     return (
@@ -353,6 +322,7 @@ def index():
         "<ul>"
         "<li><code>/rcdownload?vehicle=GJ05PB4974</code> — Direct PDF Download</li>"
         "<li><code>/rc?vehicle=GJ05PB4974</code> — JSON with Base64 PDF</li>"
+        "<li><code>/rchtml?vehicle=GJ05PB4974</code> — Raw HTML</li>"
         "</ul>"
     )
 
