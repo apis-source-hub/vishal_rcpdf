@@ -2,11 +2,8 @@ import io
 import os
 import re
 import base64
-import time
-from datetime import datetime
 import requests
 from flask import Flask, request, jsonify, Response, send_file
-from weasyprint import HTML
 
 app = Flask(__name__)
 
@@ -82,11 +79,10 @@ def normalize_api_data(raw_data: dict) -> dict:
 
 def fetch_rc_data(vehicle_no: str) -> dict:
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json, text/plain, */*"
     }
 
-    # Attempt 1: Worker API
     api_2_url = "https://vehiclev2.vk177384.workers.dev/"
     try:
         resp2 = session.get(api_2_url, params={"number": vehicle_no, "api_key": "sneha"}, headers=headers, timeout=12)
@@ -99,7 +95,6 @@ def fetch_rc_data(vehicle_no: str) -> dict:
     except Exception:
         pass
 
-    # Attempt 2: Backup API
     api_1_url = "https://vahanapi.vk177384.workers.dev/"
     try:
         resp1 = session.get(api_1_url, params={"vehicle_no": vehicle_no}, headers=headers, timeout=12)
@@ -226,10 +221,36 @@ def build_html(data: dict) -> str:
     return html
 
 
-def html_to_pdf_bytes(html_content: str) -> bytes:
-    """HTML string ko direct PDF bytes me convert karta hai"""
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    return HTML(string=html_content, base_url=base_dir).write_pdf()
+def convert_html_to_pdf_bytes(html_content: str) -> bytes:
+    """Vercel compatible HTML-to-PDF rendering via standard headless endpoint"""
+    pdf_render_url = "https://api.pdfcrowd.com/convert/24.04/"
+    # Alternative free headless render service
+    service_url = "https://pdf-direct-renderer.vercel.app/api/render"
+    
+    # Primary conversion attempt
+    try:
+        resp = requests.post(
+            "https://html2pdf.app/api/v1/generate",
+            json={"html": html_content, "format": "A4", "printBackground": True},
+            timeout=25
+        )
+        if resp.status_code == 200 and resp.content.startswith(b"%PDF"):
+            return resp.content
+    except Exception:
+        pass
+
+    # Fallback conversion via headless chromium worker
+    resp = requests.post(
+        "https://chrome.browserless.io/pdf",
+        headers={"Content-Type": "text/html"},
+        data=html_content.encode("utf-8"),
+        params={"token": "demo"},
+        timeout=25
+    )
+    if resp.status_code == 200 and resp.content.startswith(b"%PDF"):
+        return resp.content
+
+    raise RuntimeError("PDF rendering failed. Serverless PDF renderer unreachable.")
 
 
 # --- 1. DIRECT PDF DOWNLOAD ROUTE ---
@@ -242,7 +263,7 @@ def rc_pdf_download():
     try:
         data = fetch_rc_data(vehicle)
         html = build_html(data)
-        pdf_bytes = html_to_pdf_bytes(html)
+        pdf_bytes = convert_html_to_pdf_bytes(html)
 
         pdf_io = io.BytesIO(pdf_bytes)
         pdf_io.seek(0)
@@ -270,10 +291,9 @@ def rc_json():
     try:
         data = fetch_rc_data(vehicle)
         html = build_html(data)
-        pdf_bytes = html_to_pdf_bytes(html)
+        pdf_bytes = convert_html_to_pdf_bytes(html)
         pdf_base64 = base64.b64encode(pdf_bytes).decode("utf-8")
 
-        # Registration details extract logic
         reg_no = data.get("regNo", vehicle)
         rto_code = reg_no[2:4] if len(reg_no) >= 4 and reg_no[2:4].isdigit() else ""
         state_code = reg_no[:2] if len(reg_no) >= 2 else ""
@@ -283,7 +303,7 @@ def rc_json():
         state_name = data.get("rtoData", {}).get("statename", "")
         zone = data.get("regAuthority", "")
 
-        response_payload = {
+        return jsonify({
             "code": 200,
             "data": {
                 "masterData": [
@@ -304,9 +324,7 @@ def rc_json():
                     }
                 ]
             }
-        }
-
-        return jsonify(response_payload), 200
+        }), 200
 
     except Exception as exc:
         return jsonify({
