@@ -5,6 +5,11 @@ import base64
 import requests
 from flask import Flask, request, jsonify, Response, send_file
 
+from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.pdfgen import canvas
+from reportlab.graphics.shapes import Drawing, Rect, String, Line
+
 app = Flask(__name__)
 
 TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "template.html")
@@ -221,52 +226,150 @@ def build_html(data: dict) -> str:
     return html
 
 
-def convert_html_to_pdf_bytes(html_content: str) -> bytes:
-    """High-fidelity HTML to PDF converter via fast Chromium microservice"""
-    payload = {
-        "html": html_content,
-        "pdfOptions": {
-            "format": "A4",
-            "printBackground": True,
-            "margin": {"top": "0px", "right": "0px", "bottom": "0px", "left": "0px"}
-        }
-    }
-    
-    # Primary renderer
-    try:
-        resp = requests.post(
-            "https://pdf-service.vk177384.workers.dev/generate-pdf",
-            json=payload,
-            headers={"Content-Type": "application/json"},
-            timeout=20
-        )
-        if resp.status_code == 200 and resp.content.startswith(b"%PDF"):
-            return resp.content
-    except Exception:
-        pass
+def generate_rc_pdf_bytes(data: dict) -> bytes:
+    """Zero external dependency pure-Python PDF generator for Vercel Serverless"""
+    pdf_buffer = io.BytesIO()
+    c = canvas.Canvas(pdf_buffer, pagesize=A4)
+    page_w, page_h = A4
 
-    # Backup renderer endpoint
-    try:
-        resp = requests.post(
-            "https://api.pdfcrowd.com/convert/24.04/",
-            data={"text": html_content, "output_format": "pdf"},
-            timeout=20
-        )
-        if resp.status_code == 200 and resp.content.startswith(b"%PDF"):
-            return resp.content
-    except Exception:
-        pass
+    card_w = 265
+    card_h = 165
+    y_pos = page_h - 220
+    x_left = 30
+    x_right = 305
 
-    # Public Chromium microservice fallback
-    resp = requests.post(
-        "https://html-to-pdf.net/api/v1/generate",
-        json={"html": html_content},
-        timeout=25
-    )
-    if resp.status_code == 200 and resp.content.startswith(b"%PDF"):
-        return resp.content
+    bg_color = colors.HexColor("#D8EDF8")
+    border_color = colors.HexColor("#4A7A96")
 
-    raise RuntimeError("PDF render engine error. Please check converter endpoint.")
+    # --- FRONT CARD ---
+    c.setLineWidth(1.2)
+    c.setStrokeColor(border_color)
+    c.setFillColor(bg_color)
+    c.roundRect(x_left, y_pos, card_w, card_h, 8, fill=1, stroke=1)
+
+    c.setFillColor(colors.black)
+    c.setFont("Helvetica-Bold", 8)
+    state_str = data.get("rtoData", {}).get("statename", "GUJARAT").upper()
+    c.drawString(x_left + 45, y_pos + card_h - 18, "Indian Union Vehicle Registration Certificate")
+    c.drawString(x_left + 45, y_pos + card_h - 28, f"Issued by Government of {state_str}")
+
+    # Front Badges
+    c.setFillColor(colors.HexColor("#64D2EC"))
+    c.circle(x_left + card_w - 30, y_pos + card_h - 22, 9, fill=1, stroke=0)
+    c.setFillColor(colors.HexColor("#E67E22"))
+    c.circle(x_left + card_w - 12, y_pos + card_h - 22, 9, fill=1, stroke=0)
+    c.setFillColor(colors.black)
+    c.setFont("Helvetica-Bold", 7)
+    c.drawCentredString(x_left + card_w - 30, y_pos + card_h - 24, "NT")
+    c.drawCentredString(x_left + card_w - 12, y_pos + card_h - 24, "RJ")
+
+    # Front Field Values
+    reg_no = data.get("regNo", "")
+    reg_dt = format_date_to_card(data.get("regDate", ""))
+    val_dt = format_date_to_card(data.get("insuranceUpto", ""))
+
+    c.setFont("Helvetica-Bold", 7)
+    c.drawString(x_left + 45, y_pos + card_h - 45, "Regn. No")
+    c.drawString(x_left + 115, y_pos + card_h - 45, "Date of Regn.")
+    c.drawString(x_left + 185, y_pos + card_h - 45, "Regn. Validity")
+
+    c.setFont("Helvetica", 7)
+    c.drawString(x_left + 45, y_pos + card_h - 55, reg_no)
+    c.drawString(x_left + 115, y_pos + card_h - 55, reg_dt)
+    c.drawString(x_left + 185, y_pos + card_h - 55, val_dt)
+
+    c.setFont("Helvetica-Bold", 7)
+    c.drawString(x_left + 45, y_pos + card_h - 70, "Chassis Number")
+    c.setFont("Helvetica", 7)
+    c.drawString(x_left + 45, y_pos + card_h - 80, data.get("chassis", ""))
+
+    c.setFont("Helvetica-Bold", 7)
+    c.drawString(x_left + 45, y_pos + card_h - 93, "Engine / Motor Number")
+    c.setFont("Helvetica", 7)
+    c.drawString(x_left + 45, y_pos + card_h - 103, data.get("engine", ""))
+
+    c.setFont("Helvetica-Bold", 7)
+    c.drawString(x_left + 45, y_pos + card_h - 116, "Owner Name")
+    c.setFont("Helvetica", 7)
+    c.drawString(x_left + 45, y_pos + card_h - 126, data.get("owner", ""))
+
+    c.setFont("Helvetica-Bold", 7)
+    c.drawString(x_left + 45, y_pos + card_h - 138, "Son / Daughter / Wife of")
+    c.setFont("Helvetica", 7)
+    c.drawString(x_left + 45, y_pos + card_h - 147, data.get("ownerFatherName", ""))
+
+    addr1, addr2 = split_address(data.get("presentAddress", "") or data.get("permAddress", ""), 35)
+    c.setFont("Helvetica-Bold", 6.5)
+    c.drawString(x_left + 45, y_pos + card_h - 157, "Address : ")
+    c.setFont("Helvetica", 6.5)
+    c.drawString(x_left + 82, y_pos + card_h - 157, f"{addr1} {addr2}"[:50])
+
+    # Left Vertical Info
+    c.setFont("Helvetica-Bold", 6)
+    c.drawString(x_left + 5, y_pos + 60, "Fuel")
+    c.setFont("Helvetica", 6)
+    c.drawString(x_left + 5, y_pos + 50, data.get("fuelType", "PETROL"))
+
+    # --- BACK CARD ---
+    c.setStrokeColor(border_color)
+    c.setFillColor(bg_color)
+    c.roundRect(x_right, y_pos, card_w, card_h, 8, fill=1, stroke=1)
+
+    c.setFillColor(colors.HexColor("#64D2EC"))
+    c.circle(x_right + 15, y_pos + card_h - 22, 9, fill=1, stroke=0)
+    c.setFillColor(colors.HexColor("#E67E22"))
+    c.circle(x_right + 33, y_pos + card_h - 22, 9, fill=1, stroke=0)
+    c.setFillColor(colors.black)
+    c.setFont("Helvetica-Bold", 7)
+    c.drawCentredString(x_right + 15, y_pos + card_h - 24, "NT")
+    c.drawCentredString(x_right + 33, y_pos + card_h - 24, "RJ")
+
+    v_class = data.get("vehicleClass", "M-Cycle/Scooter(2WN)")
+    c.setFont("Helvetica-Bold", 7.5)
+    c.drawString(x_right + 50, y_pos + card_h - 24, f"VEHICLE CLASS : {v_class}")
+
+    c.setFont("Helvetica-Bold", 7)
+    c.drawString(x_right + 15, y_pos + card_h - 45, f"Regn. Number : {reg_no}")
+
+    # Right side details
+    c.drawString(x_right + 95, y_pos + card_h - 45, "Maker:")
+    c.setFont("Helvetica", 7)
+    c.drawString(x_right + 130, y_pos + card_h - 45, data.get("manufacturer", ""))
+
+    c.setFont("Helvetica-Bold", 7)
+    c.drawString(x_right + 95, y_pos + card_h - 60, "Model:")
+    c.setFont("Helvetica", 7)
+    c.drawString(x_right + 130, y_pos + card_h - 60, data.get("vehicle", ""))
+
+    c.setFont("Helvetica-Bold", 7)
+    c.drawString(x_right + 95, y_pos + card_h - 75, "Color:")
+    c.setFont("Helvetica", 7)
+    c.drawString(x_right + 130, y_pos + card_h - 75, data.get("color", "WHITE"))
+
+    c.setFont("Helvetica-Bold", 7)
+    c.drawString(x_right + 180, y_pos + card_h - 75, "Body Type: SALOON")
+
+    c.setFont("Helvetica-Bold", 7)
+    c.drawString(x_right + 95, y_pos + card_h - 90, "Seating Capacity:")
+    c.setFont("Helvetica", 7)
+    c.drawString(x_right + 165, y_pos + card_h - 90, data.get("seatCapacity", "2"))
+
+    c.setFont("Helvetica-Bold", 7)
+    c.drawString(x_right + 95, y_pos + card_h - 105, "Unladen Weight (Kg):")
+    c.setFont("Helvetica", 7)
+    c.drawString(x_right + 175, y_pos + card_h - 105, data.get("unladenWeight", "110"))
+
+    c.setFont("Helvetica-Bold", 6.5)
+    c.drawString(x_right + 15, y_pos + 25, f"Mfg Month/Yr: {data.get('manufacturerMonthYear', '')}")
+    c.drawString(x_right + 110, y_pos + 25, f"Cubic Cap: {data.get('cubicCapacity', '')}")
+    c.drawString(x_right + 180, y_pos + 25, "Cylinders: 1")
+
+    c.drawString(x_right + 15, y_pos + 12, f"Authority: {data.get('regAuthority', '')}")
+
+    c.showPage()
+    c.save()
+    pdf_buffer.seek(0)
+    return pdf_buffer.getvalue()
 
 
 # --- 1. DIRECT PDF DOWNLOAD ROUTE ---
@@ -278,8 +381,7 @@ def rc_pdf_download():
 
     try:
         data = fetch_rc_data(vehicle)
-        html = build_html(data)
-        pdf_bytes = convert_html_to_pdf_bytes(html)
+        pdf_bytes = generate_rc_pdf_bytes(data)
 
         return send_file(
             io.BytesIO(pdf_bytes),
@@ -304,8 +406,7 @@ def rc_json():
 
     try:
         data = fetch_rc_data(vehicle)
-        html = build_html(data)
-        pdf_bytes = convert_html_to_pdf_bytes(html)
+        pdf_bytes = generate_rc_pdf_bytes(data)
         pdf_base64 = base64.b64encode(pdf_bytes).decode("utf-8")
 
         reg_no = data.get("regNo", vehicle)
