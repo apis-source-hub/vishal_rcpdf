@@ -1,4 +1,3 @@
 requests
 flask
-Pillow
-weasyprint
+xhtml2pdf
