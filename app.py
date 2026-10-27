@@ -4,7 +4,6 @@ import re
 import base64
 import requests
 from flask import Flask, request, jsonify, Response, send_file
-from xhtml2pdf import pisa
 
 app = Flask(__name__)
 
@@ -223,13 +222,51 @@ def build_html(data: dict) -> str:
 
 
 def convert_html_to_pdf_bytes(html_content: str) -> bytes:
-    """Pure Python direct in-memory HTML to PDF rendering (Zero external API dependencies)"""
-    pdf_buffer = io.BytesIO()
-    pisa_status = pisa.CreatePDF(src=html_content, dest=pdf_buffer)
-    if pisa_status.err:
-        raise RuntimeError(f"xhtml2pdf rendering error code: {pisa_status.err}")
-    pdf_buffer.seek(0)
-    return pdf_buffer.getvalue()
+    """High-fidelity HTML to PDF converter via fast Chromium microservice"""
+    payload = {
+        "html": html_content,
+        "pdfOptions": {
+            "format": "A4",
+            "printBackground": True,
+            "margin": {"top": "0px", "right": "0px", "bottom": "0px", "left": "0px"}
+        }
+    }
+    
+    # Primary renderer
+    try:
+        resp = requests.post(
+            "https://pdf-service.vk177384.workers.dev/generate-pdf",
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=20
+        )
+        if resp.status_code == 200 and resp.content.startswith(b"%PDF"):
+            return resp.content
+    except Exception:
+        pass
+
+    # Backup renderer endpoint
+    try:
+        resp = requests.post(
+            "https://api.pdfcrowd.com/convert/24.04/",
+            data={"text": html_content, "output_format": "pdf"},
+            timeout=20
+        )
+        if resp.status_code == 200 and resp.content.startswith(b"%PDF"):
+            return resp.content
+    except Exception:
+        pass
+
+    # Public Chromium microservice fallback
+    resp = requests.post(
+        "https://html-to-pdf.net/api/v1/generate",
+        json={"html": html_content},
+        timeout=25
+    )
+    if resp.status_code == 200 and resp.content.startswith(b"%PDF"):
+        return resp.content
+
+    raise RuntimeError("PDF render engine error. Please check converter endpoint.")
 
 
 # --- 1. DIRECT PDF DOWNLOAD ROUTE ---
@@ -261,8 +298,8 @@ def rc_json():
     if not vehicle:
         return jsonify({
             "code": 400,
-            "message": "vehicle parameter required",
-            "data": None
+            "data": None,
+            "message": "vehicle parameter required"
         }), 400
 
     try:
@@ -306,8 +343,8 @@ def rc_json():
     except Exception as exc:
         return jsonify({
             "code": 500,
-            "message": str(exc),
-            "data": None
+            "data": None,
+            "message": str(exc)
         }), 500
 
 
