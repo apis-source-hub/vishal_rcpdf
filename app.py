@@ -198,9 +198,10 @@ def build_html(data: dict) -> str:
     html = re.sub(r'(>RJ<)', f">{state_prefix}<", html)
     html = re.sub(r'(ff1 fs2 fc0 sc0 ls0 ws0">), 311001(<)', lambda m: m.group(1) + addr_line1 + m.group(2), html)
 
+    # Fixed regex replacement for address line 2
     if addr_line2:
         pattern = r'(ff1 fs2 fc0 sc0 ls0 ws0">' + re.escape(addr_line1) + r'</div>\s*<div class="[^"]*ff1 fs2 fc0 sc0 ls0 ws0">)</div>'
-        html = re.sub(pattern, r'\2' + addr_line2 + r'</div>', html, count=1)
+        html = re.sub(pattern, lambda m: m.group(1) + addr_line2 + '</div>', html, count=1)
 
     html = html.replace(">PETROL<", f">{fuel}<")
     html = html.replace(">BHARAT STAGE II<", f">{norms}<")
@@ -222,12 +223,20 @@ def build_html(data: dict) -> str:
 
 
 def convert_html_to_pdf_bytes(html_content: str) -> bytes:
-    """Vercel compatible HTML-to-PDF rendering via standard headless endpoint"""
-    pdf_render_url = "https://api.pdfcrowd.com/convert/24.04/"
-    # Alternative free headless render service
-    service_url = "https://pdf-direct-renderer.vercel.app/api/render"
-    
-    # Primary conversion attempt
+    """Headless Chromium API for serverless HTML to PDF conversion"""
+    try:
+        resp = requests.post(
+            "https://chrome.browserless.io/pdf",
+            headers={"Content-Type": "text/html"},
+            data=html_content.encode("utf-8"),
+            params={"token": "demo"},
+            timeout=25
+        )
+        if resp.status_code == 200 and resp.content.startswith(b"%PDF"):
+            return resp.content
+    except Exception:
+        pass
+
     try:
         resp = requests.post(
             "https://html2pdf.app/api/v1/generate",
@@ -239,18 +248,7 @@ def convert_html_to_pdf_bytes(html_content: str) -> bytes:
     except Exception:
         pass
 
-    # Fallback conversion via headless chromium worker
-    resp = requests.post(
-        "https://chrome.browserless.io/pdf",
-        headers={"Content-Type": "text/html"},
-        data=html_content.encode("utf-8"),
-        params={"token": "demo"},
-        timeout=25
-    )
-    if resp.status_code == 200 and resp.content.startswith(b"%PDF"):
-        return resp.content
-
-    raise RuntimeError("PDF rendering failed. Serverless PDF renderer unreachable.")
+    raise RuntimeError("PDF generation service unavailable")
 
 
 # --- 1. DIRECT PDF DOWNLOAD ROUTE ---
